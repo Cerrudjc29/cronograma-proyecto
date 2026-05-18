@@ -1,15 +1,22 @@
 import React, { useState } from 'react';
-import { Calendar, CheckCircle, Search, Settings, ShieldCheck, FileText, Send, AlertCircle, QrCode } from 'lucide-react';
+import { Calendar, CheckCircle, Search, Settings, ShieldCheck, FileText, Send, AlertCircle, QrCode, Sparkles, Copy, RefreshCw, AlertTriangle } from 'lucide-react';
 
 const App = () => {
   const [activePhase, setActivePhase] = useState(null);
+  
+  // Estados para la integración de la API de Gemini
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState('');
+  const [activeAiTab, setActiveAiTab] = useState(''); // 'tasks', 'email', 'risks'
+  const [apiError, setApiError] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const projectData = [
     {
       id: 1,
       fase: "Fase 1",
       titulo: "Análisis y Descubrimiento",
-      descripcion: "Levantamiento de requerimientos, definición de alcance y viabilidad técnica.",
+      descripcion: "Levantamiento de requerimientos, definición de alcance y viabilidad técnica de la solución.",
       semanas: [1, 2, 3],
       fechas: "19 Mayo - 08 Junio",
       color: "bg-blue-600",
@@ -21,7 +28,7 @@ const App = () => {
       id: 2,
       fase: "Fase 2",
       titulo: "Implementación (Staging)",
-      descripcion: "Configuración de servidores, despliegue en entorno de pruebas y ajustes iniciales.",
+      descripcion: "Configuración de servidores, despliegue en entorno de pruebas y primeros ajustes de integración.",
       semanas: [4, 5, 6],
       fechas: "09 Junio - 29 Junio",
       color: "bg-indigo-600",
@@ -33,7 +40,7 @@ const App = () => {
       id: 3,
       fase: "Fase 3",
       titulo: "Verificación y Validación (QA)",
-      descripcion: "Ciclo intensivo de pruebas, corrección de errores y optimización de rendimiento.",
+      descripcion: "Ciclo intensivo de pruebas funcionales, automatizadas, corrección de bugs y optimización.",
       semanas: [7, 8, 9, 10, 11, 12],
       fechas: "30 Junio - 10 Agosto",
       color: "bg-purple-600",
@@ -45,7 +52,7 @@ const App = () => {
       id: 4,
       fase: "Fase 4",
       titulo: "Documentación y Empaquetado",
-      descripcion: "Elaboración de manuales técnicos, guías de usuario y preparación de entregables.",
+      descripcion: "Elaboración de manuales técnicos, guías de instalación rápida y preparación de entregables.",
       semanas: [13, 14, 15],
       fechas: "11 Agosto - 31 Agosto",
       color: "bg-amber-600",
@@ -57,7 +64,7 @@ const App = () => {
       id: 5,
       fase: "Fase 5",
       titulo: "Entregas y Cierre",
-      descripcion: "Presentación final, entrega de claves, feedback y cierre administrativo del proyecto.",
+      descripcion: "Presentación final del módulo funcionando, entrega de accesos y recopilación de feedback.",
       semanas: [16, 17, 18],
       fechas: "01 Septiembre - 19 Septiembre",
       color: "bg-emerald-600",
@@ -69,6 +76,92 @@ const App = () => {
 
   const totalSemanas = 18;
   const semanasArray = Array.from({ length: totalSemanas }, (_, i) => i + 1);
+
+  // Implementación de llamada a Gemini API con Exponential Backoff
+  const queryGemini = async (actionType, phase) => {
+    setAiLoading(true);
+    setApiError('');
+    setAiResult('');
+    setActiveAiTab(actionType);
+    setCopied(false);
+
+    const apiKey = ""; // Se inyecta en tiempo de ejecución en el entorno
+    const url = `https://genergenerativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+    // Construcción de Prompts adaptados
+    let systemInstruction = "Eres un asistente experto de IA especializado en gestión de proyectos de desarrollo de software académicos. Responde de forma muy profesional, estructurada y en español. Usa Markdown con viñetas claras y emojis adecuados.";
+    let promptText = "";
+
+    if (actionType === 'tasks') {
+      promptText = `Genera un desglose detallado de 4 a 5 tareas específicas y realistas para la etapa "${phase.titulo}" del proyecto, programada del ${phase.fechas} (Semanas del cronograma: ${phase.semanas.join(', ')}). Incluye criterios de aceptación breves para cada tarea.`;
+    } else if (actionType === 'email') {
+      promptText = `Redacta un correo electrónico formal, respetuoso y muy profesional dirigido a los profesores evaluadores para reportar el avance de la etapa "${phase.titulo}" (${phase.fechas}). Menciona los objetivos clave de este periodo y resalta si cuenta con un hito de revisión crítica (${phase.revisión ? "Sí, requiere revisión obligatoria al finalizar" : "No requiere revisión especial esta semana"}).`;
+    } else if (actionType === 'risks') {
+      promptText = `Analiza 3 riesgos técnicos o de planificación específicos para la etapa "${phase.titulo}" (${phase.fechas}). Para cada riesgo, proporciona una estrategia de mitigación realista que un estudiante de desarrollo de software pueda aplicar fácilmente.`;
+    }
+
+    const payload = {
+      contents: [{ parts: [{ text: promptText }] }],
+      systemInstruction: { parts: [{ text: systemInstruction }] }
+    };
+
+    // Algoritmo de Exponential Backoff (reintentar hasta 5 veces)
+    const fetchWithBackoff = async (retries = 5, delay = 1000) => {
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          throw new Error(`Error en el servidor de Google Gemini (Código: ${response.status})`);
+        }
+
+        const data = await response.json();
+        const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        
+        if (!generatedText) {
+          throw new Error("No se recibieron datos procesables del modelo de lenguaje.");
+        }
+
+        return generatedText;
+      } catch (err) {
+        if (retries > 1) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return fetchWithBackoff(retries - 1, delay * 2);
+        } else {
+          throw err;
+        }
+      }
+    };
+
+    try {
+      const responseText = await fetchWithBackoff();
+      setAiResult(responseText);
+    } catch (err) {
+      setApiError(err.message || 'Ocurrió un error inesperado al conectar con el Asistente IA.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  // Función recomendada para copiado seguro en entornos iframe
+  const copyToClipboard = (text) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('No se pudo copiar el texto automáticamente.', err);
+    }
+    document.body.removeChild(textarea);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 md:p-10 font-sans text-slate-900">
@@ -119,7 +212,12 @@ const App = () => {
                 <div 
                   key={phase.id} 
                   className={`grid grid-cols-[300px_1fr] items-center cursor-pointer transition-all duration-500 ${activePhase === phase.id ? 'translate-x-2' : 'opacity-85 hover:opacity-100'}`}
-                  onClick={() => setActivePhase(phase.id === activePhase ? null : phase.id)}
+                  onClick={() => {
+                    setActivePhase(phase.id === activePhase ? null : phase.id);
+                    setAiResult('');
+                    setApiError('');
+                    setActiveAiTab('');
+                  }}
                 >
                   <div className="flex items-center gap-5 pr-6">
                     <div className={`p-4 rounded-2xl ${phase.color} text-white shadow-xl shadow-indigo-500/10`}>
@@ -173,69 +271,170 @@ const App = () => {
           </div>
         </div>
 
-        {/* Panel de Detalle - Diseño más inmersivo */}
+        {/* Panel de Detalle - Diseño más inmersivo con Integraciones de Gemini */}
         {activePhase && (
-            <div className="m-10 p-8 bg-slate-900 rounded-[2rem] text-white animate-in fade-in zoom-in-95 duration-500 shadow-2xl">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 border-b border-slate-700 pb-6 gap-4">
-                    <div className="flex items-center gap-4">
-                        <div className={`p-4 rounded-2xl ${projectData.find(p => p.id === activePhase).color}`}>
-                           {projectData.find(p => p.id === activePhase).icon}
-                        </div>
-                        <div>
-                            <span className="text-xs font-black text-indigo-400 uppercase tracking-widest">Información de la {projectData.find(p => p.id === activePhase).fase}</span>
-                            <h2 className="text-3xl font-black">{projectData.find(p => p.id === activePhase).titulo}</h2>
-                        </div>
-                    </div>
-                    <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700 text-center min-w-[180px]">
-                        <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Rango de Fechas</p>
-                        <p className="text-lg font-black text-indigo-300">{projectData.find(p => p.id === activePhase).fechas}</p>
-                    </div>
+          <div className="m-10 p-8 bg-slate-900 rounded-[2rem] text-white animate-in fade-in zoom-in-95 duration-500 shadow-2xl space-y-8">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-700 pb-6 gap-4">
+              <div className="flex items-center gap-4">
+                <div className={`p-4 rounded-2xl ${projectData.find(p => p.id === activePhase).color}`}>
+                  {projectData.find(p => p.id === activePhase).icon}
                 </div>
-                <div className="grid md:grid-cols-2 gap-10">
-                    <div className="space-y-4">
-                        <h4 className="text-xs uppercase text-slate-500 font-black tracking-widest flex items-center gap-2">
-                           <div className="w-4 h-0.5 bg-indigo-500"></div> Objetivos Estratégicos
-                        </h4>
-                        <p className="text-lg text-slate-300 leading-relaxed font-medium">{projectData.find(p => p.id === activePhase).descripcion}</p>
-                    </div>
-                    <div className="bg-white/5 p-6 rounded-3xl border border-white/10 space-y-6">
-                        <div>
-                            <h4 className="text-xs uppercase text-slate-500 font-black tracking-widest mb-3">Resultado Esperado</h4>
-                            <div className="flex items-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/5">
-                                <div className="p-2 bg-emerald-500/20 rounded-full">
-                                    <CheckCircle className="w-6 h-6 text-emerald-400" />
-                                </div>
-                                <span className="text-lg font-bold text-slate-100">{projectData.find(p => p.id === activePhase).hito}</span>
-                            </div>
-                        </div>
-                        {projectData.find(p => p.id === activePhase).revisión && (
-                            <div className="flex items-center gap-4 text-rose-400 text-xs font-black bg-rose-500/10 p-4 rounded-2xl border border-rose-500/20">
-                                <div className="p-2 bg-rose-500 rounded-full text-white">
-                                    <AlertCircle className="w-4 h-4" />
-                                </div>
-                                <span>PUNTO DE CONTROL DOCENTE: VALIDACIÓN DE ENTREGABLES</span>
-                            </div>
-                        )}
-                    </div>
+                <div>
+                  <span className="text-xs font-black text-indigo-400 uppercase tracking-widest">Información de la {projectData.find(p => p.id === activePhase).fase}</span>
+                  <h2 className="text-3xl font-black">{projectData.find(p => p.id === activePhase).titulo}</h2>
                 </div>
+              </div>
+              <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700 text-center min-w-[180px]">
+                <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Rango de Fechas</p>
+                <p className="text-lg font-black text-indigo-300">{projectData.find(p => p.id === activePhase).fechas}</p>
+              </div>
             </div>
+
+            <div className="grid md:grid-cols-2 gap-10">
+              {/* Columna Izquierda: Información Estática */}
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <h4 className="text-xs uppercase text-slate-500 font-black tracking-widest flex items-center gap-2">
+                    <div className="w-4 h-0.5 bg-indigo-500"></div> Objetivos Estratégicos
+                  </h4>
+                  <p className="text-lg text-slate-300 leading-relaxed font-medium">{projectData.find(p => p.id === activePhase).descripcion}</p>
+                </div>
+
+                <div className="bg-white/5 p-6 rounded-3xl border border-white/10 space-y-4">
+                  <h4 className="text-xs uppercase text-slate-500 font-black tracking-widest">Resultado Esperado</h4>
+                  <div className="flex items-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/5">
+                    <div className="p-2 bg-emerald-500/20 rounded-full">
+                      <CheckCircle className="w-6 h-6 text-emerald-400" />
+                    </div>
+                    <span className="text-lg font-bold text-slate-100">{projectData.find(p => p.id === activePhase).hito}</span>
+                  </div>
+                  {projectData.find(p => p.id === activePhase).revisión && (
+                    <div className="flex items-center gap-4 text-rose-400 text-xs font-black bg-rose-500/10 p-4 rounded-2xl border border-rose-500/20">
+                      <div className="p-2 bg-rose-500 rounded-full text-white">
+                        <AlertCircle className="w-4 h-4" />
+                      </div>
+                      <span>PUNTO DE CONTROL DOCENTE: VALIDACIÓN DE ENTREGABLES</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Columna Derecha: Integración de Gemini API */}
+              <div className="bg-slate-800/80 rounded-3xl p-6 border border-slate-700 flex flex-col space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-black tracking-widest text-indigo-300 flex items-center gap-2 uppercase">
+                    <Sparkles className="w-5 h-5 text-indigo-400 animate-pulse" /> Asistente de IA (Gemini)
+                  </h3>
+                  <span className="text-[10px] bg-indigo-900/50 text-indigo-300 px-2 py-1 rounded font-bold font-mono">MODEL: 2.5-FLASH</span>
+                </div>
+
+                <p className="text-xs text-slate-400">
+                  Utiliza inteligencia artificial generativa para facilitar la preparación y control de esta fase.
+                </p>
+
+                {/* Botones de Acción de IA */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <button
+                    onClick={() => queryGemini('tasks', projectData.find(p => p.id === activePhase))}
+                    disabled={aiLoading}
+                    className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                      activeAiTab === 'tasks' 
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+                        : 'bg-slate-700 text-slate-200 hover:bg-slate-600'
+                    }`}
+                  >
+                    ✨ Desglosar Tareas
+                  </button>
+                  <button
+                    onClick={() => queryGemini('email', projectData.find(p => p.id === activePhase))}
+                    disabled={aiLoading}
+                    className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                      activeAiTab === 'email' 
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+                        : 'bg-slate-700 text-slate-200 hover:bg-slate-600'
+                    }`}
+                  >
+                    ✨ Borrador Correo
+                  </button>
+                  <button
+                    onClick={() => queryGemini('risks', projectData.find(p => p.id === activePhase))}
+                    disabled={aiLoading}
+                    className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                      activeAiTab === 'risks' 
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+                        : 'bg-slate-700 text-slate-200 hover:bg-slate-600'
+                    }`}
+                  >
+                    ✨ Analizar Riesgos
+                  </button>
+                </div>
+
+                {/* Contenedor de Resultados con Shimmering effect */}
+                <div className="flex-grow bg-slate-900/60 rounded-2xl p-4 border border-slate-700/50 min-h-[180px] flex flex-col justify-between">
+                  {aiLoading ? (
+                    <div className="space-y-3 animate-pulse py-4">
+                      <div className="h-3 bg-slate-700 rounded w-1/4"></div>
+                      <div className="h-2 bg-slate-700 rounded w-full"></div>
+                      <div className="h-2 bg-slate-700 rounded w-5/6"></div>
+                      <div className="h-2 bg-slate-700 rounded w-4/5"></div>
+                      <div className="h-2 bg-slate-700 rounded w-full"></div>
+                      <p className="text-[10px] text-center text-slate-500 font-bold mt-4">Procesando con Gemini...</p>
+                    </div>
+                  ) : apiError ? (
+                    <div className="flex items-center gap-3 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">
+                      <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+                      <p className="text-xs font-semibold leading-relaxed">{apiError}</p>
+                    </div>
+                  ) : aiResult ? (
+                    <div className="space-y-4 flex flex-col justify-between h-full">
+                      <div className="text-xs text-slate-300 max-h-[220px] overflow-y-auto pr-1 leading-relaxed whitespace-pre-line font-medium">
+                        {aiResult}
+                      </div>
+                      <div className="flex justify-end pt-2 border-t border-slate-800">
+                        <button
+                          onClick={() => copyToClipboard(aiResult)}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors"
+                        >
+                          {copied ? (
+                            <>
+                              <CheckCircle className="w-4 h-4 text-emerald-400" /> ¡Copiado!
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4 text-indigo-400" /> Copiar al Portapapeles
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-8 text-center text-slate-500">
+                      <Sparkles className="w-8 h-8 text-slate-600 mb-2" />
+                      <p className="text-xs font-bold">Selecciona una de las acciones ✨ superiores.</p>
+                      <p className="text-[10px] text-slate-600 mt-1">Se generará contenido estratégico dinámico basado en la fase.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Footer Visual */}
         <div className="p-8 bg-slate-50 text-slate-500 flex flex-col md:flex-row justify-between items-center border-t border-slate-100 gap-6">
-            <div className="flex flex-wrap gap-8 justify-center">
-                <div className="flex items-center gap-3">
-                    <div className="w-3 h-3 bg-rose-500 rounded-full shadow-lg shadow-rose-500/40"></div>
-                    <span className="text-[11px] font-black uppercase tracking-wider">Hito de Revisión</span>
-                </div>
-                <div className="flex items-center gap-3">
-                    <div className="w-3 h-3 bg-emerald-500 rounded-full shadow-lg shadow-emerald-500/40"></div>
-                    <span className="text-[11px] font-black uppercase tracking-wider">Finalización de Etapa</span>
-                </div>
+          <div className="flex flex-wrap gap-8 justify-center">
+            <div className="flex items-center gap-3">
+              <div className="w-3 h-3 bg-rose-500 rounded-full shadow-lg shadow-rose-500/40"></div>
+              <span className="text-[11px] font-black uppercase tracking-wider">Hito de Revisión</span>
             </div>
-            <div className="px-6 py-2 bg-slate-900 rounded-full">
-                <p className="text-[10px] font-black text-white tracking-widest italic">ANTEPROYECTO 2025 • CICLO COMPLETO 18 SEMANAS</p>
+            <div className="flex items-center gap-3">
+              <div className="w-3 h-3 bg-emerald-500 rounded-full shadow-lg shadow-emerald-500/40"></div>
+              <span className="text-[11px] font-black uppercase tracking-wider">Finalización de Etapa</span>
             </div>
+          </div>
+          <div className="px-6 py-2 bg-slate-900 rounded-full">
+            <p className="text-[10px] font-black text-white tracking-widest italic">ANTEPROYECTO 2025 • CICLO COMPLETO 18 SEMANAS</p>
+          </div>
         </div>
       </div>
       
